@@ -1,0 +1,103 @@
+name: Linbet VPS v5 (Hybrid Secure Edition)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"   # إعادة تشغيل تلقائي كل 6 ساعات لضمان الاستمرارية
+
+jobs:
+  linbet-vps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: 🚀 إعداد النظام الأساسي
+        run: |
+          sudo apt update -y
+          sudo apt install -y openssh-server curl nodejs npm git
+          sudo systemctl enable ssh
+          sudo systemctl start ssh
+          echo "✅ تم تفعيل SSH بنجاح بدون تعديل كلمة المرور"
+
+      - name: 🌍 تفعيل Tailscale VPN لتجاوز الحظر الجغرافي
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=linbet-vps-${{ github.run_id }} --ssh
+          tsIP=$(tailscale ip -4 | head -n 1)
+          echo "TAILSCALE_IP=$tsIP" >> $GITHUB_ENV
+          echo "🌍 تم تفعيل Tailscale بنجاح | IP: $tsIP"
+
+      - name: 🧠 إعداد بيئة Linbet VPS
+        run: |
+          mkdir ~/linbet-vps
+          cd ~/linbet-vps
+
+          echo "PORT=3000" >> $GITHUB_ENV
+
+          # إنشاء ملف الخادم
+          cat << 'EOF' > linbet-vps.js
+          const http = require('http');
+          const fs = require('fs');
+          const os = require('os');
+          const moment = require('moment');
+
+          // إعدادات عامة
+          const PORT = process.env.PORT || 3000;
+          const LOG_PATH = './linbet_vps_log.txt';
+
+          // دالة لتسجيل الأحداث في ملف
+          function logEvent(message) {
+            const log = `[${moment().format('YYYY-MM-DD HH:mm:ss')}] ${message}\n`;
+            fs.appendFileSync(LOG_PATH, log);
+            console.log(log.trim());
+          }
+
+          // خادم HTTP الأساسي
+          const server = http.createServer((req, res) => {
+            if (req.method === 'POST') {
+              let body = '';
+              req.on('data', chunk => body += chunk);
+              req.on('end', () => {
+                try {
+                  const data = JSON.parse(body);
+                  logEvent(`📩 إشارة جديدة من الخادم | المستخدم: ${data.userId || 'unknown'} | الجولة: ${data.round || 'N/A'} | دقة: ${data.accuracy || 'N/A'}`);
+                  
+                  res.writeHead(200, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ status: 'ok', received: data }));
+                } catch (err) {
+                  logEvent(`❌ خطأ في تحليل JSON: ${err.message}`);
+                  res.writeHead(400, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ error: 'Invalid JSON' }));
+                }
+              });
+            } else if (req.method === 'GET') {
+              // نقطة فحص الحالة
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({
+                status: "✅ Linbet VPS v5 Online",
+                serverTime: moment().format(),
+                hostname: os.hostname(),
+                tailscaleIP: process.env.TAILSCALE_IP || "Not detected",
+                message: "Connected to Linbet Backend Successfully"
+              }));
+            }
+          });
+
+          server.listen(PORT, () => {
+            logEvent(`🚀 Linbet VPS v5 يعمل على المنفذ ${PORT}`);
+          });
+          EOF
+
+          # تثبيت وإعداد PM2 لتشغيل دائم
+          npm install pm2 -g
+          pm2 start linbet-vps.js --name linbet-vps
+          pm2 save
+          echo "✅ تم تشغيل Linbet VPS Node.js بنجاح عبر PM2"
+
+      - name: 📊 مراقبة واستمرارية التشغيل (Keep-Alive)
+        run: |
+          echo "⚙️ VPS يعمل في وضع المراقبة المستمرة..."
+          while true; do
+            echo "[$(date)] VPS لا يزال يعمل بنجاح..."
+            sleep 300
+          done
